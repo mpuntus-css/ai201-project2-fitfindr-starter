@@ -18,7 +18,52 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
+import re
+
 from tools import search_listings, suggest_outfit, create_fit_card
+
+
+def _parse_query(query: str) -> dict:
+    """Extract description, size, and max_price from a free-form user query."""
+    normalized = query.strip()
+    size = None
+    max_price = None
+
+    size_patterns = [
+        r"\bsize\s*([a-z0-9/()\-]+(?:\s*\([^)]+\))?)",
+        r"\b([xslm]{1,3}|xxs|xs|s|m|l|xl|xxl|xxxl|one size)\b",
+    ]
+    for pattern in size_patterns:
+        match = re.search(pattern, normalized, flags=re.IGNORECASE)
+        if match:
+            size = match.group(1) if match.lastindex else match.group(0)
+            size = size.replace("size", "").strip()
+            break
+
+    price_patterns = [
+        r"(?:under|below|less than|max(?:imum)?(?: price)?(?: of)?|budget of)\s*\$?\s*(\d+(?:\.\d+)?)",
+        r"\$\s*(\d+(?:\.\d+)?)",
+    ]
+    for pattern in price_patterns:
+        match = re.search(pattern, normalized, flags=re.IGNORECASE)
+        if match:
+            max_price = float(match.group(1))
+            break
+
+    description = normalized
+    description = re.sub(r"\bsize\s*[a-z0-9/()\-]+(?:\s*\([^)]+\))?", " ", description, flags=re.IGNORECASE)
+    description = re.sub(r"\b(?:under|below|less than|max(?:imum)?(?: price)?(?: of)?|budget of)\s*\$?\s*\d+(?:\.\d+)?", " ", description, flags=re.IGNORECASE)
+    description = re.sub(r"\$\s*\d+(?:\.\d+)?", " ", description)
+    description = re.sub(r"\s+", " ", description).strip(" ,.-")
+
+    if not description:
+        description = normalized
+
+    return {
+        "description": description,
+        "size": size,
+        "max_price": max_price,
+    }
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -92,9 +137,35 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+    session["parsed"] = _parse_query(query)
+
+    session["search_results"] = search_listings(
+        session["parsed"]["description"],
+        session["parsed"]["size"],
+        session["parsed"]["max_price"],
+    )
+
+    if not session["search_results"]:
+        session["error"] = "No listings found. Try a broader description or a higher price limit."
+        session["fit_card"] = None
+        return session
+
+    session["selected_item"] = session["search_results"][0]
+
+    session["outfit_suggestion"] = suggest_outfit(session["selected_item"], session["wardrobe"])
+    if not session["outfit_suggestion"] or not session["outfit_suggestion"].strip():
+        session["error"] = "Could not generate outfit advice from the current wardrobe."
+        session["fit_card"] = None
+        return session
+
+    session["fit_card"] = create_fit_card(session["outfit_suggestion"], session["selected_item"])
+    if session["fit_card"].startswith("Unable to create a fit card"):
+        session["error"] = session["fit_card"]
+        session["fit_card"] = None
+        return session
+
+    session["error"] = None
     return session
 
 
@@ -108,6 +179,8 @@ if __name__ == "__main__":
         query="looking for a vintage graphic tee under $30",
         wardrobe=get_example_wardrobe(),
     )
+    print(f"Selected item: {session['selected_item']}")
+    print(f"Outfit suggestion: {session['outfit_suggestion']}")
     if session["error"]:
         print(f"Error: {session['error']}")
     else:
